@@ -1,0 +1,84 @@
+name: CI - Sprint 3 Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_VERSION: '8.0.x'
+  SOLUTION_FILE: 'Grocery.sln'
+
+jobs:
+  unit-tests:
+    name: Unit Tests (A3)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      # Restore projects needed for tests (safe – restore ≠ build, ensures refs for TestCore; skips MAUI app)
+      - name: Restore (core + data + tests)
+        run: |
+          dotnet restore Grocery.Core/Grocery.Core.csproj
+          dotnet restore Grocery.Core.Data/Grocery.Core.Data.csproj
+          dotnet restore TestCore/TestCore.csproj
+
+      # Run the unit tests for TestCore (build happens implicitly here)
+      - name: Test (TRX + Coverage)
+        run: dotnet test TestCore/TestCore.csproj -c Release --logger "trx;LogFileName=testresults.trx" --collect "XPlat Code Coverage"
+
+      # Nice-to-have: human-friendly HTML coverage report
+      - name: Install ReportGenerator
+        run: dotnet tool update -g dotnet-reportgenerator-globaltool
+
+      - name: Create HTML coverage
+        run: |
+          ~/.dotnet/tools/reportgenerator -reports:**/TestResults/**/coverage.cobertura.xml -targetdir:CoverageReport -reporttypes:Html
+        shell: bash
+
+      # Artefacts required by the rubric (always upload, even on failures)
+      - name: Upload test artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}
+          path: |
+            **/TestResults/*.trx
+            **/TestResults/**/coverage.cobertura.xml
+            CoverageReport/**
+
+      # Visible summary on the run/PR (helps with the testrapportage)
+      - name: Publish test summary
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: "**/TestResults/*.trx"
+          check_name: "Test Results"
