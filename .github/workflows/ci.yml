@@ -1,0 +1,160 @@
+# GroceryApp Sprint 3 - Minimal Test Pipeline
+# UC07: Grocery List Sharing & UC08: Product Search Implementation
+
+name: CI - Sprint 3 Testing
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+# Cancel older runs to save resources
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_VERSION: '7.0.x'
+  SOLUTION_FILE: 'Grocery.sln'
+
+jobs:
+  # Unit Tests (A3 Method)
+  unit-tests:
+    name: 'Unit Tests'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          
+      - name: Cache NuGet
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+            
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_FILE }}
+        
+      # A3 Method: Unit Tests
+      - name: Test (Unit)
+        run: |
+          dotnet test TestCore/TestCore.csproj \
+            -c Release \
+            --logger "trx;LogFileName=unit-tests.trx" \
+            --collect "XPlat Code Coverage" \
+            --results-directory TestResults/Unit
+            
+      # UC-specific tests
+      - name: Test UC07 & UC08
+        run: |
+          dotnet test ${{ env.SOLUTION_FILE }} \
+            --filter "TestCategory=UC07|TestCategory=UC08" \
+            --logger "trx;LogFileName=uc-tests.trx" \
+            --results-directory TestResults/UC \
+            --no-build
+            
+      - name: Generate Coverage Report
+        run: |
+          dotnet tool update -g dotnet-reportgenerator-globaltool
+          reportgenerator \
+            -reports:**/TestResults/**/coverage.cobertura.xml \
+            -targetdir:CoverageReport \
+            -reporttypes:Html
+            
+      - name: Upload Test Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}
+          path: |
+            TestResults/**/*.trx
+            TestResults/**/coverage.cobertura.xml
+            CoverageReport/**
+          
+      - name: Publish Test Results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: "TestResults/**/*.trx"
+
+  # Integration Tests  
+  integration-tests:
+    name: 'Integration Tests'
+    runs-on: windows-latest
+    needs: unit-tests
+    if: success()
+    
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          SA_PASSWORD: 'TestPass123!'
+          ACCEPT_EULA: 'Y'
+        ports:
+          - 1433:1433
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          
+      - name: Install MAUI Workload
+        run: dotnet workload install maui
+        
+      - name: Setup Test Database
+        run: |
+          sqlcmd -S localhost -U SA -P 'TestPass123!' -Q "
+          CREATE DATABASE GroceryApp_Test;
+          USE GroceryApp_Test;
+          CREATE TABLE GroceryLists (Id INT IDENTITY PRIMARY KEY, Name NVARCHAR(100), IsShared BIT);
+          CREATE TABLE Products (Id INT IDENTITY PRIMARY KEY, Name NVARCHAR(100), Stock INT, IsAvailable BIT);
+          INSERT INTO Products VALUES ('Bread', 50, 1), ('Milk', 30, 1), ('Apples', 100, 1);"
+        shell: cmd
+        
+      - name: Restore
+        run: dotnet restore ${{ env.SOLUTION_FILE }}
+        
+      - name: Test (Integration)
+        run: |
+          dotnet test ${{ env.SOLUTION_FILE }} \
+            --filter "TestCategory=Integration" \
+            --logger "trx;LogFileName=integration-tests.trx" \
+            --results-directory TestResults/Integration \
+            -c Release
+        env:
+          CONNECTION_STRING: "Server=localhost;Database=GroceryApp_Test;User Id=SA;Password=TestPass123!;TrustServerCertificate=true"
+          
+      - name: Test (UI)
+        run: |
+          dotnet test ${{ env.SOLUTION_FILE }} \
+            --filter "TestCategory=UI" \
+            --logger "trx;LogFileName=ui-tests.trx" \
+            --results-directory TestResults/UI \
+            -c Release
+        continue-on-error: true
+        
+      - name: Upload Integration Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-results-${{ github.run_number }}
+          path: TestResults/**/*.trx
