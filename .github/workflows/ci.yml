@@ -44,9 +44,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuget-
 
-      # Restore the solution (safe – restore ≠ build, and ensures references for TestCore)
-      - name: Restore (solution)
-        run: dotnet restore ${{ env.SOLUTION_FILE }}
+      # Restore projects needed for tests (safe – restore ≠ build, ensures refs for TestCore; skips MAUI app)
+      - name: Restore (core + data + tests)
+        run: |
+          dotnet restore Grocery.Core/Grocery.Core.csproj
+          dotnet restore Grocery.Core.Data/Grocery.Core.Data.csproj
+          dotnet restore TestCore/TestCore.csproj
 
       # Run the unit tests for TestCore (build happens implicitly here)
       - name: Test (TRX + Coverage)
@@ -58,7 +61,7 @@ jobs:
 
       - name: Create HTML coverage
         run: |
-          reportgenerator -reports:**/TestResults/**/coverage.cobertura.xml -targetdir:CoverageReport -reporttypes:Html
+          ~/.dotnet/tools/reportgenerator -reports:**/TestResults/**/coverage.cobertura.xml -targetdir:CoverageReport -reporttypes:Html
         shell: bash
 
       # Artefacts required by the rubric (always upload, even on failures)
